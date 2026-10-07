@@ -1,0 +1,33 @@
+# Local secrets — never commit (covers .env, .env.local, etc.)
+.env*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Local tool binaries (e.g. bin/yt-dlp.exe on Windows) — download, don't commit.
+# Production installs yt-dlp via Dockerfile / system package instead.
+bin/
+
+# Runtime bot logs (any .log file)
+*.log
+
+# Temp / partial media artifacts (playback itself writes nothing to disk,
+# but yt-dlp/ffmpeg may leave partials on failure)
+*.part
+*.ytdl
+*.tmp
+temp/
+tmp/
+
+# Test / coverage artifacts
+coverage/
+.nyc_output/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

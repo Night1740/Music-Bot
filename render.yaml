@@ -1,0 +1,33 @@
+# Render blueprint for Churan.
+#
+# Architecture: Background Worker (NOT a Web Service).
+# Churan holds a long-running Discord Gateway connection and serves no HTTP,
+# so a Web Service health check on $PORT would fail and restart-loop.
+# A worker needs no port, no health endpoint, and no Dockerfile EXPOSE.
+#
+# Usage (manual, nothing is deployed by committing this file):
+#   1. Push the repo to GitHub (after reviewing).
+#   2. Render Dashboard → New → Blueprint → select this repo.
+#   3. When prompted, enter DISCORD_TOKEN and CLIENT_ID (secret values,
+#      never committed — see .env.example). GUILD_ID is optional.
+#   4. Deploy. Then run `npm run deploy` once locally to register
+#      slash commands (or run deploy-commands in a Render shell).
+
+services:
+  - type: worker
+    name: churan
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Keep the worker on the free tier by default; bump when you need
+    # 24/7 reliability (free workers sleep — see README limitations).
+    plan: free
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: NODE_ENV
+        value: production
