@@ -3,11 +3,12 @@
 # Why Docker:
 #   Churan is a persistent Discord Gateway bot (client.login, no HTTP server),
 #   so Render must run it as a Background Worker, not a Web Service.
-#   The image pins Node 20 + system FFmpeg + a Linux yt-dlp binary, which the
+#   The image pins Node 22 + system FFmpeg + a Linux yt-dlp binary, which the
 #   local Windows setup (bin/yt-dlp.exe + ffmpeg-static) cannot provide.
+#   Node 22 is required: @discordjs/voice@0.19.2 declares engines >=22.12.0.
 #   No HTTP endpoint is added on purpose — a worker needs none.
 
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 # System deps:
 #   ffmpeg         — audio transcoding for @discordjs/voice (prism-media spawns it)
