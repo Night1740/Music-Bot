@@ -12,7 +12,7 @@ const { isPlaying } = require('../voice/player');
 const { searchYouTube } = require('../youtube/search');
 const { selectBestResult } = require('../youtube/select');
 const { getState, bumpEpoch } = require('../music/queue');
-const { playTrackNow } = require('../music/playback');
+const { playTrackNow, playNextInQueue } = require('../music/playback');
 const { resolveIntent } = require('../vibe/intent');
 const { buildVibePlaylist } = require('../vibe/engine');
 
@@ -46,6 +46,114 @@ function vibeReply(intent, tracks) {
   return out;
 }
 
+  // Play-now attempt with stale protection. The search/extraction above
+  // took seconds: another transition (skip, stop, auto-advance, another
+  // /play) may have won meanwhile. On stale we NEVER cut off the winner —
+  // re-decide once against live state, then queue. Bumping before the
+  // safety kick makes this attempt the sole owner so it cannot double-
+  // commit alongside an in-flight advance.
+  async function startNowOrQueue(guildId, connection, track, fail, nowMsg) {
+    bumpEpoch(guildId);
+    const token = getState(guildId).epoch;
+    let res;
+    try {
+      res = await playTrackNow(connection, guildId, track, token);
+    } catch (err) {
+      console.error(`[Churan] /play playback failed (guild ${guildId}):`, err.message || err);
+      await fail('❌ Found the song but could not play it. Try again in a moment.');
+      return;
+    }
+    if (res.status === 'played') {
+      await fail(nowMsg(track));
+      return;
+    }
+    if (!isPlaying(guildId)) {
+      bumpEpoch(guildId);
+      const token2 = getState(guildId).epoch;
+      try {
+        const res2 = await playTrackNow(connection, guildId, track, token2);
+        if (res2.status === 'played') {
+          await fail(nowMsg(track));
+          return;
+        }
+      } catch (err) {
+        console.error(`[Churan] /play playback failed (guild ${guildId}):`, err.message || err);
+        await fail('❌ Found the song but could not play it. Try again in a moment.');
+        return;
+      }
+    }
+    const st = getState(guildId);
+    st.queue.push(track);
+    if (!isPlaying(guildId)) {
+      bumpEpoch(guildId);
+      const adv = await playNextInQueue(guildId, getState(guildId).epoch);
+      if (adv.status === 'played' || adv.status === 'replayed') {
+        await fail(nowMsg(adv.track));
+        return;
+      }
+    }
+    await fail(`➕ Added to queue (#${st.queue.length} in queue): ${track.title}`);
+  }
+
+  // Vibe variant: same stale discipline, but keeps playlist order (first
+  // goes to the FRONT when it loses the race) and rolls back the queued
+  // rest when extraction itself fails, so no orphaned tracks linger.
+  async function startVibeOrQueue(guildId, connection, intent, tracks, fail) {
+    const [first, ...rest] = tracks;
+    bumpEpoch(guildId);
+    const token = getState(guildId).epoch;
+    const st = getState(guildId);
+    st.queue.push(...rest);
+    const rollbackRest = () => {
+      const q = getState(guildId).queue;
+      for (const t of rest) {
+        const i = q.indexOf(t);
+        if (i >= 0) q.splice(i, 1);
+      }
+    };
+    let res;
+    try {
+      res = await playTrackNow(connection, guildId, first, token);
+    } catch (err) {
+      rollbackRest();
+      console.error(`[Churan] /play vibe playback failed (guild ${guildId}):`, err.message || err);
+      await fail('❌ Found the vibe but could not play it. Try again in a moment.');
+      return;
+    }
+    const nowMsg = () => `${vibeReply(intent, tracks)}\n\n▶️ Now playing: ${first.title}`;
+    if (res.status === 'played') {
+      await fail(nowMsg());
+      return;
+    }
+    if (!isPlaying(guildId)) {
+      bumpEpoch(guildId);
+      const token2 = getState(guildId).epoch;
+      try {
+        const res2 = await playTrackNow(connection, guildId, first, token2);
+        if (res2.status === 'played') {
+          await fail(nowMsg());
+          return;
+        }
+      } catch (err) {
+        rollbackRest();
+        console.error(`[Churan] /play vibe playback failed (guild ${guildId}):`, err.message || err);
+        await fail('❌ Found the vibe but could not play it. Try again in a moment.');
+        return;
+      }
+    }
+    const live = getState(guildId);
+    live.queue.unshift(first); // front: preserve vibe order
+    if (!isPlaying(guildId)) {
+      bumpEpoch(guildId);
+      const adv = await playNextInQueue(guildId, getState(guildId).epoch);
+      if (adv.status === 'played' || adv.status === 'replayed') {
+        await fail(nowMsg());
+        return;
+      }
+    }
+    await fail(vibeReply(intent, tracks));
+  }
+
 async function playExactSong(interaction, connection, query, fail) {
   let results;
   try {
@@ -78,16 +186,16 @@ async function playExactSong(interaction, connection, query, fail) {
 
   // Play now only when the player is truly idle; otherwise queue. Queued
   // tracks store metadata (NOT extracted URLs) — a fresh live URL is
-  // extracted when each track starts.
+  // extracted when each track starts. The helper re-validates after the
+  // slow extraction so a late finish can never cut off another track.
   if (!isPlaying(interaction.guildId)) {
-    bumpEpoch(interaction.guildId);
-    try {
-      await playTrackNow(connection, interaction.guildId, track);
-      await fail(`▶️ Now playing: ${track.title}`);
-    } catch (err) {
-      console.error(`[Churan] /play playback failed (guild ${interaction.guildId}):`, err.message || err);
-      await fail('❌ Found the song but could not play it. Try again in a moment.');
-    }
+    await startNowOrQueue(
+      interaction.guildId,
+      connection,
+      track,
+      fail,
+      (t) => `▶️ Now playing: ${t.title}`,
+    );
     return;
   }
 
@@ -113,19 +221,10 @@ async function playVibePlaylist(interaction, connection, query, intent, fail) {
     return;
   }
 
-  // Feed NORMAL track objects into the EXISTING queue/playback system.
+  // Feed NORMAL track objects into the EXISTING queue/playback system
+  // (same safe start path as exact songs).
   if (!isPlaying(interaction.guildId)) {
-    bumpEpoch(interaction.guildId);
-    const [first, ...rest] = tracks;
-    const st = getState(interaction.guildId);
-    st.queue.push(...rest);
-    try {
-      await playTrackNow(connection, interaction.guildId, first);
-      await fail(`${vibeReply(intent, tracks)}\n\n▶️ Now playing: ${first.title}`);
-    } catch (err) {
-      console.error(`[Churan] /play vibe playback failed (guild ${interaction.guildId}):`, err.message || err);
-      await fail('❌ Found the vibe but could not play it. Try again in a moment.');
-    }
+    await startVibeOrQueue(interaction.guildId, connection, intent, tracks, fail);
     return;
   }
 

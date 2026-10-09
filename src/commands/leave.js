@@ -4,6 +4,7 @@ const { SlashCommandBuilder } = require('discord.js');
 const { leaveGuild } = require('../voice/manager');
 const { isPlaying, stopGuild } = require('../voice/player');
 const { suppressNextIdle, clearGuild } = require('../music/queue');
+const { clearPlaybackState } = require('../music/playback');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -26,6 +27,7 @@ module.exports = {
       stopGuild(interaction.guildId);
       const left = leaveGuild(interaction.guildId);
       clearGuild(interaction.guildId);
+      clearPlaybackState(interaction.guildId);
       if (!left) {
         await interaction.reply('❌ I\'m not in a voice channel.');
         return;

@@ -37,8 +37,15 @@ function ensurePlayer(guildId) {
   let player = players.get(guildId);
   if (player) return player;
 
+  // maxMissedFrames (default 5 = ~100ms): how many consecutive 20ms
+  // audio frames may starve before the player gives up and goes Idle.
+  // Remote FFmpeg streams (throttled Googlevideo URLs, Render network
+  // jitter) stall briefly far more often than local files; the default
+  // turns a ~100ms stall into a track-skip. 50 (~1s) tolerates transient
+  // starvation while still ending genuinely dead streams. This is a
+  // starvation tolerance, NOT a wait-before-advance timer.
   player = createAudioPlayer({
-    behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
+    behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 50 },
   });
 
   player.on(AudioPlayerStatus.Idle, () => {
@@ -59,8 +66,10 @@ function ensurePlayer(guildId) {
 // Caller must have checked isPlaying() first to avoid overlapping playback.
 function playResource(connection, guildId, resource) {
   const player = ensurePlayer(guildId);
+  const before = player.state.status;
   connection.subscribe(player);
   player.play(resource);
+  console.log(`[Churan:play] player-play guild=${guildId} ${before} -> ${player.state.status}`);
   return player;
 }
 
@@ -87,11 +96,13 @@ function playUrl(connection, guildId, mediaUrl) {
 function stopGuild(guildId) {
   const player = players.get(guildId);
   if (!player) return false;
+  const before = player.state.status;
   try {
     player.stop(true);
   } catch (err) {
     console.error(`[Churan] Error stopping playback (guild ${guildId}):`, err.message || err);
   }
+  console.log(`[Churan:play] player-stop guild=${guildId} ${before} -> ${player.state.status}`);
   players.delete(guildId);
   return true;
 }
